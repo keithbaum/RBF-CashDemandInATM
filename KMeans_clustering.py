@@ -1,7 +1,9 @@
 import numpy as np
+import datetime
 from functools import lru_cache
 from matplotlib import pyplot as plt
 from collections import namedtuple
+from data import normalize, setTrainingAndValidationSets
 
 clusterWithGaussian = namedtuple('clusterWithGaussian','mu sigma cluster')
 
@@ -33,6 +35,8 @@ class singlePoint(object):
         return singlePoint( np.power( self.coordinates, power) )
 
     def __truediv__(self, number):
+        if number==0:
+            return singlePoint( np.ones(self.dimensions)*np.inf )
         return singlePoint( self.coordinates/number )
 
     def distance(self, otherPoint=None):
@@ -48,7 +52,7 @@ class guassianNode(object):
         return np.exp(-point.distance(self.mu)**2/(2*self.sigma))
 
 class KMeans (object):
-    def __init__(self,X, nClusters=9, tolerance=1e-2, maxIterations=10):
+    def __init__(self,X, nClusters=9, tolerance=1e-3, maxIterations=50):
         self.points = X
         self.nClusters = nClusters
         self.tolerance = tolerance
@@ -64,7 +68,7 @@ class KMeans (object):
         newMus = np.random.choice(self.points,self.nClusters)
         error = np.inf
         repetitions=0
-        while( error > self.tolerance or repetitions<10):
+        while( error > self.tolerance and repetitions<self.maxIterations):
             mus = newMus
             clusters = { mu:[] for mu in mus }
             for x in self.points:
@@ -74,12 +78,20 @@ class KMeans (object):
             newMus = [ sum( cluster,singlePoint() )/len(cluster) for cluster in  clusters.values() ]
             error = max( [ mu.distance(newMu) for mu,newMu in zip(mus,newMus) ] )
             repetitions+=1
+        if repetitions==self.maxIterations:
+            print("Didn't converge. Reached max iterations. Error=%.5f"%error)
         return clusters
 
     @classmethod
     def _getSigmas(cls, clusters):
         mus = list( clusters.keys() )
-        return { mu:np.sqrt( sum( [ point.distance(mu)**2 for point in clusters[mu] ] )/len(clusters[mu] ) ) for mu in mus}
+        result={}
+        for mu in mus:
+            if len(clusters[mu])==0:
+                result[mu]=0
+                continue
+            result[mu]=np.sqrt( sum( [ point.distance(mu)**2 for point in clusters[mu] ] )/len(clusters[mu] ) )
+        return result
 
     @property
     def clusters(self):
@@ -88,19 +100,30 @@ class KMeans (object):
     @property
     @lru_cache(maxsize=None)
     def RBFMatrix(self):
-        gaussianFunctions = [ guassianNode(cluster.mu, cluster.sigma) for cluster in self.clustersWithGaussians ]
         rbfMatrix = np.empty((len(self.points),self.nClusters))
-        for j,gaussianFunction in enumerate(gaussianFunctions):
+        for j,gaussianFunction in enumerate(self.RBFSet):
             for n,point in enumerate(self.points):
                 rbfMatrix[n,j]=gaussianFunction.evaluate(point)
         return rbfMatrix
 
+    @property
+    @lru_cache(maxsize=None)
+    def RBFSet(self):
+        return [ guassianNode(cluster.mu, cluster.sigma) for cluster in self.clustersWithGaussians ]
+
     def weightsFromTraining(self,givenResults):
         if isinstance(givenResults, list):
-            results=np.array(givenResults)
+            givenResults=np.array(givenResults)
         pseudoInverseRBFMatrix=np.linalg.inv(self.RBFMatrix.transpose()@self.RBFMatrix)@self.RBFMatrix.transpose()
         weights=pseudoInverseRBFMatrix@givenResults
         return weights
+
+    def evaluate(self,weights,points):
+        result=np.zeros(len(points))
+        for n,point in enumerate(points):
+            for j, gaussianFunction in enumerate(self.RBFSet):
+                result[n]+=weights[j]*gaussianFunction.evaluate(point)
+        return result
 
     def plotClusters(self,weights=None):
         mus = list ( self.clusters.keys() )
@@ -120,13 +143,38 @@ class KMeans (object):
         plt.show()
 
 
-#Random testing samples
-trainingPoints=[]
-for i in range(5000):
-    coord = np.random.random_sample(2)
-    trainingPoints.append( singlePoint( coord ) )
-randomResults=np.round( 1000*np.array([point.distance() for point in trainingPoints]) )
+def calculateRSS(krange=None, percentageForTraining=0.8):
+    RSS=[]
+    krange=krange or range(2,15)
+    for i in krange:
+        print('Testing for %s clusters'%i)
+        np.random.seed(datetime.datetime.now().microsecond)
+        datasets = setTrainingAndValidationSets(datapoints, results, percentageForTraining)
+        trainingPoints = [singlePoint(datasets.trainingSet.datapoints[i, :]) for i in
+                          range(datasets.trainingSet.datapoints.shape[0])]
+        validationPoints = [singlePoint(datasets.validationSet.datapoints[i, :]) for i in
+                            range(datasets.validationSet.datapoints.shape[0])]
 
-kmeans = KMeans(trainingPoints)
-weights=kmeans.weightsFromTraining(randomResults)
-kmeans.plotClusters(weights)
+        kmeans = KMeans(trainingPoints,nClusters=i)
+        weights=kmeans.weightsFromTraining(datasets.trainingSet.results)
+        estimatedResults=np.sign( kmeans.evaluate(weights,validationPoints) )*0.5
+        rss=0.5*np.sum( np.power(estimatedResults-datasets.validationSet.results,2))
+        RSS.append( rss )
+        print("RSS=%.5f"%rss)
+    return RSS
+
+data=np.loadtxt('data.csv',int, delimiter=',',skiprows=1,usecols=range(1,22))
+results= normalize(data[:, -1])
+datapoints= normalize(data[:, :-1])
+
+krange=range(2,15)
+RSS=calculateRSS(krange,0.8)
+plt.plot(krange,RSS)
+plt.show()
+
+# plt.plot(datasets.validationSet.results,c='blue',label='Original')
+# plt.plot(estimatedResults,c='green',label='Estimated')
+# plt.legend()
+
+
+#kmeans.plotClusters(weights)
