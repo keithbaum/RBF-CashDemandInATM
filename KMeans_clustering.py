@@ -1,6 +1,9 @@
 import numpy as np
 import datetime
-from functools import lru_cache
+import matplotlib
+import matplotlib.style
+matplotlib.use("Qt5Agg")
+matplotlib.style.use('classic')
 from matplotlib import pyplot as plt
 from collections import namedtuple
 from data import normalize, setTrainingAndValidationSets
@@ -39,6 +42,12 @@ class singlePoint(object):
             return singlePoint( np.ones(self.dimensions)*np.inf )
         return singlePoint( self.coordinates/number )
 
+    def __eq__(self, otherPoint):
+        return np.array_equal(self.coordinates,otherPoint.coordinates)
+
+    def __hash__(self):
+        return hash(id(self))
+
     def distance(self, otherPoint=None):
         otherPoint = otherPoint or singlePoint( np.zeros( self.dimensions ) )
         return ( self - otherPoint ).norm
@@ -49,6 +58,8 @@ class guassianNode(object):
         self.sigma = sigma
 
     def evaluate(self,point):
+        if self.sigma==0:       #Then this is a delta function rather than a gaussian
+            return 1 if point==self.mu else 0
         return np.exp(-point.distance(self.mu)**2/(2*self.sigma))
 
 class KMeans (object):
@@ -65,7 +76,7 @@ class KMeans (object):
         self.clustersWithGaussians = [ clusterWithGaussian(mu,sigmas[mu],clusters[mu]) for mu in list(clusters.keys()) ]
 
     def _getCenters(self):
-        newMus = np.random.choice(self.points,self.nClusters)
+        newMus = np.random.choice(self.points,self.nClusters,replace=False)
         error = np.inf
         repetitions=0
         while( error > self.tolerance and repetitions<self.maxIterations):
@@ -76,10 +87,16 @@ class KMeans (object):
                 argmin = distances.index( min( distances ) )
                 clusters[ mus[ argmin ] ].append( x )
             newMus = [ sum( cluster,singlePoint() )/len(cluster) for cluster in  clusters.values() ]
-            error = max( [ mu.distance(newMu) for mu,newMu in zip(mus,newMus) ] )
-            repetitions+=1
-        if repetitions==self.maxIterations:
-            print("Didn't converge. Reached max iterations. Error=%.5f"%error)
+            error = max([mu.distance(newMu) for mu, newMu in zip(mus, newMus)])
+            repetitions += 1
+            for i,cluster in enumerate(clusters.values()):  #Look for empty clusters and fix it!
+                if len(cluster)==0:
+                    print('Found empty cluster! Resetting clusterization')
+                    newMus[i]=np.random.choice(self.points,1)[0]
+                    repetitions=0
+                    error=np.inf
+            if repetitions == self.maxIterations:
+                print("Didn't converge. Reached max iterations. Error=%.5f" % error)
         return clusters
 
     @classmethod
@@ -87,9 +104,6 @@ class KMeans (object):
         mus = list( clusters.keys() )
         result={}
         for mu in mus:
-            if len(clusters[mu])==0:
-                result[mu]=0
-                continue
             result[mu]=np.sqrt( sum( [ point.distance(mu)**2 for point in clusters[mu] ] )/len(clusters[mu] ) )
         return result
 
@@ -98,7 +112,6 @@ class KMeans (object):
         return {aClusterWithGaussian.mu: aClusterWithGaussian.cluster for aClusterWithGaussian in self.clustersWithGaussians}
 
     @property
-    @lru_cache(maxsize=None)
     def RBFMatrix(self):
         rbfMatrix = np.empty((len(self.points),self.nClusters))
         for j,gaussianFunction in enumerate(self.RBFSet):
@@ -107,7 +120,6 @@ class KMeans (object):
         return rbfMatrix
 
     @property
-    @lru_cache(maxsize=None)
     def RBFSet(self):
         return [ guassianNode(cluster.mu, cluster.sigma) for cluster in self.clustersWithGaussians ]
 
@@ -147,29 +159,47 @@ def calculateRSS(krange=None, percentageForTraining=0.8):
     RSS=[]
     krange=krange or range(2,15)
     for i in krange:
-        print('Testing for %s clusters'%i)
-        np.random.seed(datetime.datetime.now().microsecond)
-        datasets = setTrainingAndValidationSets(datapoints, results, percentageForTraining)
-        trainingPoints = [singlePoint(datasets.trainingSet.datapoints[i, :]) for i in
-                          range(datasets.trainingSet.datapoints.shape[0])]
-        validationPoints = [singlePoint(datasets.validationSet.datapoints[i, :]) for i in
-                            range(datasets.validationSet.datapoints.shape[0])]
-
-        kmeans = KMeans(trainingPoints,nClusters=i)
-        weights=kmeans.weightsFromTraining(datasets.trainingSet.results)
-        estimatedResults=np.sign( kmeans.evaluate(weights,validationPoints) )*0.5
-        rss=0.5*np.sum( np.power(estimatedResults-datasets.validationSet.results,2))
-        RSS.append( rss )
-        print("RSS=%.5f"%rss)
+        RSS.append(_calculateRSSForNClusters(nClusters=i,percentageForTraining=percentageForTraining))
     return RSS
+
+
+def _calculateRSSForNClusters(nClusters=None, percentageForTraining=0.8):
+    nClusters=nClusters or 9
+    np.random.seed(datetime.datetime.now().microsecond)
+    datasets = setTrainingAndValidationSets(datapoints, results, percentageForTraining)
+    print('Testing for %s clusters' % nClusters)
+    rsss=[]
+    for dataset in datasets:
+        trainingPoints = [singlePoint(dataset.trainingSet.datapoints[i, :]) for i in
+                          range(dataset.trainingSet.datapoints.shape[0])]
+        validationPoints = [singlePoint(dataset.validationSet.datapoints[i, :]) for i in
+                            range(dataset.validationSet.datapoints.shape[0])]
+
+        kmeans = KMeans(trainingPoints, nClusters=nClusters)
+        weights = kmeans.weightsFromTraining(dataset.trainingSet.results)
+        estimatedResults = np.sign(kmeans.evaluate(weights, validationPoints)) * 0.5
+        rsss.append( np.sum(np.power(estimatedResults - dataset.validationSet.results, 2)) / len(estimatedResults) * 100.0 )
+    rss=np.mean(rsss)
+
+    print("RSS=%.5f" % rss + '%')
+    return rss
 
 data=np.loadtxt('data.csv',int, delimiter=',',skiprows=1,usecols=range(1,22))
 results= normalize(data[:, -1])
 datapoints= normalize(data[:, :-1])
 
 krange=range(2,15)
-RSS=calculateRSS(krange,0.8)
-plt.plot(krange,RSS)
+percentegesForTraining=[0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
+color = iter(plt.get_cmap('rainbow')(np.linspace(0, 1, len(percentegesForTraining))))
+RSSs=np.empty((len(percentegesForTraining),len(krange)))
+for i,percentageForTraining in enumerate(percentegesForTraining):
+    print(str(percentageForTraining*100.0)+'% of samples for training')
+    RSS=calculateRSS(krange,percentageForTraining)
+    RSSs[i,:]=RSS
+    c = next(color)
+    plt.plot(krange,RSS,label='training with '+str(percentageForTraining*100)+'%',color=c)
+plt.plot(krange,np.mean(RSSs,axis=1),color='black',linestyle='--', linewidth=2,label='Average')
+plt.legend()
 plt.show()
 
 # plt.plot(datasets.validationSet.results,c='blue',label='Original')

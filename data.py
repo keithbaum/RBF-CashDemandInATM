@@ -12,12 +12,16 @@ def normalize(datapoints):
     return (datapoints-means)/deltas
 
 
-def setTrainingAndValidationSets(datapoints, results, percentageForTraining=0.8):
+def setTrainingAndValidationSets(datapoints, results, percentageForTraining=0.8, iterations=None):
     sampleDimension=len(results)
     trainingDimension=int(percentageForTraining*sampleDimension)
+    iterations = iterations or 10
+    shiftForIteration=int((sampleDimension-trainingDimension)/(iterations-1))
+    result = []
 
-    trainingSelection=np.random.choice(range(sampleDimension),trainingDimension)
-    validationSelection=np.array(list(set(range(sampleDimension))-set(trainingSelection)))
-
-    return trainingAndValidationSet(dataSet(datapoints[trainingSelection,:],results[trainingSelection]),
-                                    dataSet(datapoints[validationSelection, :], results[validationSelection]))
+    for i in range(iterations):
+        trainingSelection=np.arange(i*shiftForIteration,i*shiftForIteration+trainingDimension)
+        validationSelection=np.array(list(set(range(sampleDimension))-set(trainingSelection)))
+        result.append( trainingAndValidationSet(dataSet(datapoints[trainingSelection,:],results[trainingSelection]),
+                                                dataSet(datapoints[validationSelection, :], results[validationSelection])) )
+    return result
