@@ -13,6 +13,7 @@ def normalize(datapoints):
 
 
 def setTrainingAndValidationSets(datapoints, results, percentageForTraining=0.8, iterations=None):
+    '''Iterations based on cross-validation'''
     sampleDimension=len(results)
     trainingDimension=int(percentageForTraining*sampleDimension)
     iterations = iterations or 10
